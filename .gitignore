@@ -1,0 +1,40 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# builds
+dist/
+build/
+.next/
+out/
+
+# env — never commit real secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+!.env.local.example
+
+# generated Ethereal credentials (recreate with `npm run seed:senders`)
+.ethereal.json
+
+# logs
+*.log
+npm-debug.log*
+logs/
+
+# prisma
+backend/prisma/*.db
+
+# editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# test output
+coverage/
+
+# next.js build info
+*.tsbuildinfo

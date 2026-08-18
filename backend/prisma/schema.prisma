@@ -1,0 +1,117 @@
+// Prisma schema — ReachInbox email job scheduler
+//
+// Postgres is the source of truth for *what* must be sent and *when*.
+// Redis/BullMQ is the execution engine. That split is what makes restart
+// recovery possible: if Redis is ever wiped, the reconciler rebuilds the
+// delayed set from EmailJob rows.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum EmailStatus {
+  scheduled // waiting in the BullMQ delayed set
+  processing // claimed by a worker, send in flight
+  sent // terminal success
+  failed // terminal failure (attempts exhausted)
+  cancelled // terminal, user-cancelled before send
+}
+
+model User {
+  id        String   @id @default(cuid())
+  googleSub String   @unique @map("google_sub")
+  email     String   @unique
+  name      String?
+  avatarUrl String?  @map("avatar_url")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  campaigns Campaign[]
+
+  @@map("users")
+}
+
+/// An SMTP identity we send from. Multiple senders let us spread load across
+/// independent hourly quotas. Seeded with Ethereal test accounts.
+model Sender {
+  id               String   @id @default(cuid())
+  name             String
+  email            String   @unique
+  smtpHost         String   @map("smtp_host")
+  smtpPort         Int      @map("smtp_port")
+  smtpSecure       Boolean  @default(false) @map("smtp_secure")
+  smtpUser         String   @map("smtp_user")
+  smtpPass         String   @map("smtp_pass")
+  maxEmailsPerHour Int      @map("max_emails_per_hour")
+  active           Boolean  @default(true)
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  emailJobs EmailJob[]
+
+  @@map("senders")
+}
+
+/// One "Compose New Email" submission: subject + body + a list of recipients,
+/// fanned out into one EmailJob per recipient.
+model Campaign {
+  id              String   @id @default(cuid())
+  userId          String   @map("user_id")
+  subject         String
+  body            String
+  startAt         DateTime @map("start_at")
+  /// Delay between consecutive sends in this campaign, in milliseconds.
+  delayMs         Int      @map("delay_ms")
+  /// Per-sender hourly cap for this campaign. Effective limit is
+  /// min(sender.maxEmailsPerHour, campaign.hourlyLimit).
+  hourlyLimit     Int      @map("hourly_limit")
+  totalRecipients Int      @map("total_recipients")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emailJobs EmailJob[]
+
+  @@index([userId, createdAt])
+  @@map("campaigns")
+}
+
+/// One email to one recipient. `id` doubles as the BullMQ jobId — that is what
+/// makes re-enqueueing idempotent (BullMQ ignores add() for an existing id).
+model EmailJob {
+  id         String      @id @default(cuid())
+  campaignId String      @map("campaign_id")
+  senderId   String      @map("sender_id")
+  recipient  String
+  subject    String
+  body       String
+  /// Position within the campaign. Drives send spacing and, critically,
+  /// preserves FIFO order when a batch overflows into the next hour window.
+  seq        Int
+  status     EmailStatus @default(scheduled)
+
+  scheduledAt DateTime  @map("scheduled_at")
+  sentAt      DateTime? @map("sent_at")
+  lockedAt    DateTime? @map("locked_at")
+
+  attempts   Int     @default(0)
+  error      String?
+  messageId  String? @map("message_id")
+  /// Ethereal preview link, surfaced as "Preview" in the Sent table.
+  previewUrl String? @map("preview_url")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  sender   Sender   @relation(fields: [senderId], references: [id])
+
+  // Drives the reconciler sweep (find everything still pending) and the
+  // Scheduled tab ordering.
+  @@index([status, scheduledAt])
+  @@index([campaignId, seq])
+  @@index([status, sentAt])
+  @@map("email_jobs")
+}

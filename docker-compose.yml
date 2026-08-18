@@ -1,0 +1,51 @@
+# Optional convenience stack.
+#
+# The app does NOT require Docker — it talks to any Redis >= 6.2 and any Postgres.
+# On the dev machine this was built on, Redis runs as a native Windows service
+# (Memurai) and Postgres via the official Windows installer. This file exists so a
+# reviewer with Docker can get identical infra in one command:
+#
+#   docker compose up -d
+#
+# Then point backend/.env at:
+#   DATABASE_URL=postgresql://postgres:postgres@localhost:5432/email_scheduler
+#   REDIS_URL=redis://localhost:6379
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: email_scheduler_pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: email_scheduler
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: email_scheduler_redis
+    restart: unless-stopped
+    # appendonly yes => delayed jobs survive a Redis restart, not just an app restart.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
+  redisdata:
